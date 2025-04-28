@@ -28,7 +28,7 @@ luxafor_app/
 
 1. **Clone the repo** on your build machine:
    ```bash
-   git clone <your-repo-url>
+   git clone https://github.com/jeremiahtalamantes/luxafor_app.git
    cd luxafor_app
    ```
 2. **Restore & Run** interactively:
