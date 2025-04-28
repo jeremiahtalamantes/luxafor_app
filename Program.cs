@@ -1,3 +1,5 @@
+// File: Program.cs
+
 using System;
 using System.Linq;
 using System.Net;
@@ -14,9 +16,9 @@ internal class Program
 
     private static void Main()
     {
-        // Discover the first attached Luxafor device
+        // Find the first attached Luxafor device
         var devices = DeviceList.Local.GetHidDevices(0x04D8, 0xF372).ToList();
-        if (!devices.Any())
+        if (devices.Count == 0)
         {
             Console.Error.WriteLine("[Luxafor] No Luxafor device found (VID:0x04D8, PID:0xF372).");
             return;
@@ -50,53 +52,57 @@ internal class Program
             }
 
             // Read request body
-            var body = new System.IO.StreamReader(req.InputStream).ReadToEnd();
+            string body = new System.IO.StreamReader(req.InputStream).ReadToEnd();
 
             // Blink endpoint
             if (req.HttpMethod == "POST" && req.Url.AbsolutePath == "/api/v1.5/command/blink")
             {
-                _blinkCts?.Cancel();  // stop any existing blink
+                _blinkCts?.Cancel();
 
-                var json     = JsonDocument.Parse(body).RootElement;
-                var color    = json.GetProperty("color").GetString() ?? "off";
-                var onMs     = json.GetProperty("onDuration").GetInt32();
-                var offMs    = json.GetProperty("offDuration").GetInt32();
-                var count    = json.GetProperty("count").GetInt32();
+                var json  = JsonDocument.Parse(body).RootElement;
+                string color = json.GetProperty("color").GetString() ?? "off";
+                int onMs     = json.GetProperty("onDuration").GetInt32();
+                int offMs    = json.GetProperty("offDuration").GetInt32();
+                int count    = json.GetProperty("count").GetInt32();
 
-                Console.WriteLine($"[Luxafor] Blink: {color}, on {onMs}ms/off {offMs}ms ×{(count <= 0 ? \"∞\" : count.ToString())}");
+                string countStr = count <= 0 ? "infinite" : count.ToString();
+                Console.WriteLine($"[Luxafor] Blink: {color}, on {onMs}ms/off {offMs}ms ×{countStr}");
 
-                _blinkCts = new CancellationTokenSource();
-                Task.Run(() => BlinkLoop(dev, color, onMs, offMs, count, _blinkCts.Token), _blinkCts.Token);
+                var cts = new CancellationTokenSource();
+                _blinkCts = cts;
+                Task.Run(() => BlinkLoop(dev, color, onMs, offMs, count, cts.Token), cts.Token);
 
                 res.StatusCode = 200;
-                res.OutputStream.Write(Encoding.UTF8.GetBytes("OK"));
+                var okBytes = Encoding.UTF8.GetBytes("OK");
+                res.OutputStream.Write(okBytes, 0, okBytes.Length);
             }
-            // Stop-blink endpoint
+            // Stop‐blink endpoint
             else if (req.HttpMethod == "POST" && req.Url.AbsolutePath == "/api/v1.5/command/stop-blink")
             {
                 _blinkCts?.Cancel();
                 SetColor(dev, "off");
 
                 res.StatusCode = 200;
-                res.OutputStream.Write(Encoding.UTF8.GetBytes("OK"));
+                var okBytes = Encoding.UTF8.GetBytes("OK");
+                res.OutputStream.Write(okBytes, 0, okBytes.Length);
             }
             // Steady color endpoint
             else if (req.HttpMethod == "POST" && req.Url.AbsolutePath == "/api/v1.5/command/color")
             {
                 _blinkCts?.Cancel();
 
-                var color = JsonDocument.Parse(body)
-                                       .RootElement
-                                       .GetProperty("color")
-                                       .GetString() ?? "off";
+                string color = JsonDocument.Parse(body)
+                                           .RootElement
+                                           .GetProperty("color")
+                                           .GetString() ?? "off";
 
                 Console.WriteLine($"[Luxafor] Set color: {color}");
                 SetColor(dev, color);
 
                 res.StatusCode = 200;
-                res.OutputStream.Write(Encoding.UTF8.GetBytes("OK"));
+                var okBytes = Encoding.UTF8.GetBytes("OK");
+                res.OutputStream.Write(okBytes, 0, okBytes.Length);
             }
-            // Not found
             else
             {
                 res.StatusCode = 404;
@@ -106,11 +112,11 @@ internal class Program
         }
     }
 
-    // Runs the blink loop, respects cancellation and infinite count
     private static void BlinkLoop(HidDevice dev, string color, int onMs, int offMs, int count, CancellationToken token)
     {
         int i = 0;
         bool infinite = count <= 0;
+
         while (!token.IsCancellationRequested && (infinite || i < count))
         {
             SetColor(dev, color);
@@ -121,11 +127,11 @@ internal class Program
         }
     }
 
-    // Sends the 9-byte HID report to set the color
     private static void SetColor(HidDevice dev, string color)
     {
         using var stream = dev.Open();
         byte r = 0, g = 0, b = 0;
+
         switch (color.ToLowerInvariant())
         {
             case "red":   r = 0xFF; break;
@@ -136,7 +142,8 @@ internal class Program
                 Console.Error.WriteLine($"[Luxafor] Unknown color '{color}', defaulting off.");
                 break;
         }
-        // HID report: [ReportID=0x00, Mode=0x01, LED mask=0xFF, R, G, B, 0x00, 0x00, 0x00]
+
+        // HID report: [0x00,0x01,0xFF,R,G,B,0x00,0x00,0x00]
         var report = new byte[] { 0x00, 0x01, 0xFF, r, g, b, 0x00, 0x00, 0x00 };
         stream.Write(report, 0, report.Length);
     }
