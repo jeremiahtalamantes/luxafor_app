@@ -3,6 +3,7 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using HidSharp;
 
 internal class Program
@@ -12,15 +13,16 @@ internal class Program
         var devices = DeviceList.Local.GetHidDevices(0x04D8, 0xF372).ToList();
         if (!devices.Any())
         {
-            Console.Error.WriteLine("[Luxafor] No Luxafor device found (VID:0x04D8, PID:0xF372).\n");
+            Console.Error.WriteLine("[Luxafor] No Luxafor device found (VID:0x04D8, PID:0xF372).");
             return;
         }
-        Console.WriteLine($"[Luxafor] Found {devices.Count} device(s). Using device path: {devices[0].DevicePath}");
+        var dev = devices[0];
+        Console.WriteLine($"[Luxafor] Using device: {dev.DevicePath}");
 
         var listener = new HttpListener();
         listener.Prefixes.Add("http://+:9123/");
         listener.Start();
-        Console.WriteLine("[Luxafor] Listening on port 9123... (press Ctrl+C to exit)");
+        Console.WriteLine("[Luxafor] Listening on port 9123...");
 
         while (true)
         {
@@ -28,26 +30,33 @@ internal class Program
             var req     = context.Request;
             var res     = context.Response;
 
+            using var reader = new System.IO.StreamReader(req.InputStream);
+            var body = reader.ReadToEnd();
+
             if (req.HttpMethod == "POST" &&
                 req.Url.AbsolutePath == "/api/v1.5/command/color")
             {
-                using var reader = new System.IO.StreamReader(req.InputStream);
-                var body = reader.ReadToEnd();
-                var doc  = JsonDocument.Parse(body);
-
-                if (doc.RootElement.TryGetProperty("color", out var colEl))
-                {
-                    var color = colEl.GetString();
-                    Console.WriteLine($"[Luxafor] Received color command: {color}");
-                    SetColor(devices[0], color);
-                    res.StatusCode = 200;
-                    var msg = Encoding.UTF8.GetBytes("OK");
-                    res.OutputStream.Write(msg, 0, msg.Length);
-                }
-                else
-                {
-                    res.StatusCode = 400;
-                }
+                var color = JsonDocument.Parse(body)
+                                        .RootElement
+                                        .GetProperty("color")
+                                        .GetString();
+                Console.WriteLine($"[Luxafor] Set color: {color}");
+                SetColor(dev, color);
+                res.StatusCode = 200;
+                res.OutputStream.Write(Encoding.UTF8.GetBytes("OK"));
+            }
+            else if (req.HttpMethod == "POST" &&
+                     req.Url.AbsolutePath == "/api/v1.5/command/blink")
+            {
+                var json = JsonDocument.Parse(body).RootElement;
+                var color     = json.GetProperty("color").GetString();
+                var onMs      = json.GetProperty("onDuration").GetInt32();
+                var offMs     = json.GetProperty("offDuration").GetInt32();
+                var count     = json.GetProperty("count").GetInt32();
+                Console.WriteLine($"[Luxafor] Blink: {color}, on {onMs}ms/off {offMs}ms ×{count}");
+                Blink(dev, color, onMs, offMs, count);
+                res.StatusCode = 200;
+                res.OutputStream.Write(Encoding.UTF8.GetBytes("OK"));
             }
             else
             {
@@ -61,28 +70,26 @@ internal class Program
     private static void SetColor(HidDevice dev, string? color)
     {
         if (string.IsNullOrEmpty(color)) return;
-        try
+        using var stream = dev.Open();
+        byte r = 0, g = 0, b = 0;
+        switch (color.ToLowerInvariant())
         {
-            using var stream = dev.Open();
-            // 9-byte report: [ReportID=0x00, Mode=0x01, LED=0xFF (all), R, G, B, 0x00, 0x00, 0x00]
-            byte r = 0, g = 0, b = 0;
-            switch (color.ToLowerInvariant())
-            {
-                case "red":   r = 0xFF; break;
-                case "green": g = 0xFF; break;
-                case "blue":  b = 0xFF; break;
-                case "off":   break;
-                default:
-                    Console.Error.WriteLine($"[Luxafor] Unknown color '{color}', defaulting off.");
-                    break;
-            }
-            var report = new byte[] { 0x00, 0x01, 0xFF, r, g, b, 0x00, 0x00, 0x00 };
-            stream.Write(report, 0, report.Length);
-            Console.WriteLine($"[Luxafor] Set color to {color} (R={r},G={g},B={b})");
+            case "red":   r = 0xFF; break;
+            case "green": g = 0xFF; break;
+            case "blue":  b = 0xFF; break;
         }
-        catch (Exception ex)
+        var report = new byte[] { 0x00, 0x01, 0xFF, r, g, b, 0, 0, 0 };
+        stream.Write(report, 0, report.Length);
+    }
+
+    private static void Blink(HidDevice dev, string? color, int onMs, int offMs, int count)
+    {
+        for (int i = 0; i < count; i++)
         {
-            Console.Error.WriteLine($"[Luxafor] Error writing to device: {ex.Message}");
+            SetColor(dev, color);
+            Thread.Sleep(onMs);
+            SetColor(dev, "off");
+            Thread.Sleep(offMs);
         }
     }
 }
